@@ -5,6 +5,7 @@ package isort
 
 import (
 	"bufio"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -16,10 +17,10 @@ import (
 
 // Changes describes the set of changes requested to a file.
 type Changes struct {
-	StartLine     int      // Line that imports begin on, 1-indexed.
-	EndLine       int      // Line that imports end on
-	Imports       []Import // List of imports, in order.
-	ChangesNeeded bool     // True if changes are needed to this file.
+	StartLine int      // Line that imports begin on, 1-indexed.
+	EndLine   int      // Line that imports end on
+	Imports   []Import // List of imports, in order.
+	Needed    bool     // True if changes are needed to this file.
 }
 
 // An Import describes a single import path.
@@ -36,6 +37,7 @@ const (
 	standardLibrary packageType = 0
 	thirdParty                  = 1
 	localPackage                = 2
+	blankLine                   = 3
 )
 
 // Reformat reformats an existing file and returns the details of changes to be made.
@@ -43,17 +45,25 @@ func Reformat(filename, localPkg string) (*Changes, error) {
 	fset := token.FileSet{}
 	f, err := parser.ParseFile(&fset, filename, nil, parser.ImportsOnly)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	changes := &Changes{}
-	for _, spec := range f.ImportSpec {
+	for _, spec := range f.Imports {
+		line := fset.Position(spec.Pos()).Line
 		if changes.StartLine == 0 {
-			changes.StartLine = fset.Position(spec.Pos()).Line
+			changes.StartLine = line
+		}
+		if line > changes.EndLine+1 {
+			changes.Imports = append(changes.Imports, Import{}) // blank line
 		}
 		changes.EndLine = fset.Position(spec.EndPos).Line
-		changes.Imports = append(Import{
+		name := ""
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		changes.Imports = append(changes.Imports, Import{
 			Path:    spec.Path.Value,
-			Name:    spec.Name.Name,
+			Name:    name,
 			Doc:     convertComment(spec.Doc),
 			Comment: strings.Join(convertComment(spec.Comment), " "),
 		})
@@ -63,26 +73,44 @@ func Reformat(filename, localPkg string) (*Changes, error) {
 	original := make([]Import, len(imps))
 	copy(original, imps)
 
-	stdPkgs := make(map[string]struct{}, len(stdlib))
-	for _, pkg := range stdlib {
-		stdPkgs[pkg] = struct{}{}
-	}
-
+	stdPkgs := stdPkgMap()
 	cmp := func(a, b int) bool {
-		typeA := classifyPkg(imps[a].Path)
-		typeB := classifyPkg(imps[b].Path)
+		pathA := strings.Trim(imps[a].Path, `"`)
+		pathB := strings.Trim(imps[b].Path, `"`)
+		typeA := classifyPkg(pathA, localPkg, stdPkgs)
+		typeB := classifyPkg(pathB, localPkg, stdPkgs)
 		if typeA != typeB {
 			return typeA < typeB
-		} else if imps[a].Path != imps[b].Path {
-			return imps[a].Path < imps[b].Path
+		} else if pathA != pathB {
+			return pathA < pathB
 		}
 		return imps[a].Name < imps[b].Name
 	}
-	changes.ChangesNeeded = sort.SliceIsSorted(imps, cmp)
-	if changes.ChangesNeeded {
-		sort.Slice(imps, cmp)
+	sort.Slice(imps, cmp)
+	// Add spaces if required
+	imps2 := make([]Import, 0, len(imps)+2)
+	lastType := standardLibrary
+	for i, imp := range imps {
+		thisType := classifyPkg(strings.Trim(imp.Path, `"`), localPkg, stdPkgs)
+		if thisType != lastType && i != 0 {
+			imps2 = append(imps2, Import{})
+		} else if thisType != blankLine {
+			imps2 = append(imps2, imp)
+		}
+		lastType = thisType
 	}
-	return changes
+	if len(imps2) != len(imps) {
+		changes.Needed = true
+	} else {
+		for i, imp := range imps {
+			if imp.Path != imps2[i].Path || imp.Name != imps2[i].Name {
+				changes.Needed = true
+				break
+			}
+		}
+	}
+	changes.Imports = imps2
+	return changes, nil
 }
 
 // Rewrite rewrites the contents of a file based on a set of changes.
@@ -103,7 +131,7 @@ func Rewrite(filename string, changes *Changes) error {
 	w := bufio.NewWriter(f)
 	defer w.Flush()
 	for i := 0; i < changes.StartLine-1; i++ {
-		w.Write(lines[i])
+		w.WriteString(lines[i])
 	}
 	if len(changes.Imports) == 1 {
 		// Special case to write on a single line.
@@ -116,7 +144,7 @@ func Rewrite(filename string, changes *Changes) error {
 		w.WriteRune('\n')
 	}
 	for i := changes.EndLine - 1; i < len(lines); i++ {
-		w.Write(lines[i])
+		w.WriteString(lines[i])
 	}
 	return nil
 }
@@ -130,6 +158,14 @@ func convertComment(cg *ast.CommentGroup) []string {
 		ret[i] = c.Text
 	}
 	return ret
+}
+
+func stdPkgMap() map[string]struct{} {
+	m := make(map[string]struct{}, len(stdlib))
+	for _, pkg := range stdlib {
+		m[pkg] = struct{}{}
+	}
+	return m
 }
 
 // classifyPkg classifies a package into one of three buckets; standard library, third-party and local.
@@ -148,7 +184,7 @@ func classifyPkg(name, localPkg string, stdPkgs map[string]struct{}) packageType
 }
 
 // writeImport writes a single import to the given writer.
-func writeImport(w bufio.Writer, imp Import, prefix string) {
+func writeImport(w *bufio.Writer, imp Import, prefix string) {
 	for _, doc := range imp.Doc {
 		w.WriteString(prefix)
 		w.WriteString(doc)

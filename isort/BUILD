@@ -19,3 +19,13 @@ genrule(
         "echo '}' >> $OUT",
     ],
 )
+
+go_test(
+    name = "isort_test",
+    srcs = ["isort_test.go"],
+    data = ["test_data"],
+    deps = [
+        ":isort",
+        "//:testify",
+    ],
+)
