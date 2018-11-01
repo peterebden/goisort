@@ -48,13 +48,16 @@ func Reformat(filename, localPkg string) (*Changes, error) {
 		return nil, err
 	}
 	changes := &Changes{}
-	for _, spec := range f.Imports {
+	for i, spec := range f.Imports {
 		line := fset.Position(spec.Pos()).Line
 		if changes.StartLine == 0 {
 			changes.StartLine = line
 		}
-		if line > changes.EndLine+1 {
+		if line > changes.EndLine+1 && i > 0 {
 			changes.Imports = append(changes.Imports, Import{}) // blank line
+		}
+		if spec.EndPos == 0 { // Not guaranteed to be set
+			spec.EndPos = spec.Path.Pos()
 		}
 		changes.EndLine = fset.Position(spec.EndPos).Line
 		name := ""
@@ -92,17 +95,18 @@ func Reformat(filename, localPkg string) (*Changes, error) {
 	lastType := standardLibrary
 	for i, imp := range imps {
 		thisType := classifyPkg(strings.Trim(imp.Path, `"`), localPkg, stdPkgs)
-		if thisType != lastType && i != 0 {
-			imps2 = append(imps2, Import{})
-		} else if thisType != blankLine {
+		if thisType != blankLine {
+			if thisType != lastType && i != 0 {
+				imps2 = append(imps2, Import{})
+			}
 			imps2 = append(imps2, imp)
 		}
 		lastType = thisType
 	}
-	if len(imps2) != len(imps) {
+	if len(imps2) != len(original) {
 		changes.Needed = true
 	} else {
-		for i, imp := range imps {
+		for i, imp := range original {
 			if imp.Path != imps2[i].Path || imp.Name != imps2[i].Name {
 				changes.Needed = true
 				break
@@ -170,7 +174,9 @@ func stdPkgMap() map[string]struct{} {
 
 // classifyPkg classifies a package into one of three buckets; standard library, third-party and local.
 func classifyPkg(name, localPkg string, stdPkgs map[string]struct{}) packageType {
-	if _, present := stdPkgs[name]; present {
+	if name == "" {
+		return blankLine
+	} else if _, present := stdPkgs[name]; present {
 		return standardLibrary
 	} else if localPkg != "" && strings.HasPrefix(name, localPkg) {
 		return localPackage
