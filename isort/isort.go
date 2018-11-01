@@ -118,8 +118,11 @@ func Reformat(filename, localPkg string) (*Changes, error) {
 }
 
 // Rewrite rewrites the contents of a file based on a set of changes.
-func Rewrite(filename string, changes *Changes) error {
-	b, err := ioutil.ReadFile(filename)
+func Rewrite(infile, outfile string, changes *Changes) error {
+	if !changes.Needed {
+		return nil
+	}
+	b, err := ioutil.ReadFile(infile)
 	if err != nil {
 		return err
 	}
@@ -127,7 +130,7 @@ func Rewrite(filename string, changes *Changes) error {
 	if len(lines) < changes.EndLine {
 		return fmt.Errorf("Mismatching file lengths; expected at least %d but got %d", changes.EndLine, len(lines))
 	}
-	f, err := os.Create(filename)
+	f, err := os.Create(outfile)
 	if err != nil {
 		return err
 	}
@@ -135,7 +138,11 @@ func Rewrite(filename string, changes *Changes) error {
 	w := bufio.NewWriter(f)
 	defer w.Flush()
 	for i := 0; i < changes.StartLine-1; i++ {
+		if strings.HasPrefix(lines[i], "import") {
+			break
+		}
 		w.WriteString(lines[i])
+		w.WriteRune('\n')
 	}
 	if len(changes.Imports) == 1 {
 		// Special case to write on a single line.
@@ -149,6 +156,7 @@ func Rewrite(filename string, changes *Changes) error {
 	}
 	for i := changes.EndLine - 1; i < len(lines); i++ {
 		w.WriteString(lines[i])
+		w.WriteRune('\n')
 	}
 	return nil
 }
@@ -201,8 +209,6 @@ func writeImport(w *bufio.Writer, imp Import, prefix string) {
 		w.WriteString(imp.Name)
 		w.WriteRune(' ')
 	}
-	w.WriteRune('"')
 	w.WriteString(imp.Path)
-	w.WriteRune('"')
 	w.WriteRune('\n')
 }

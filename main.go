@@ -30,7 +30,7 @@ func main() {
 			os.Exit(1)
 		}
 		if opts.Write {
-			if err := isort.Rewrite(string(filename), changes); err != nil {
+			if err := isort.Rewrite(string(filename), string(filename), changes); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to rewrite %s: %s", filename, err)
 				os.Exit(1)
 			}
